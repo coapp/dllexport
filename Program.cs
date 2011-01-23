@@ -184,8 +184,8 @@ Usage:
                 return Fail("Error: the specified target assembly \r\n   [{0}]\r\ndoes not exist.", targetAssembly);
             }
 
-            var ILDasm = new ProcessUtility(ProgramFinder.ProgramFilesAndDotNet.FindFile("ildasm.exe", "4.0.30319.1"));
-            var ILAsm = new ProcessUtility(ProgramFinder.ProgramFilesAndDotNet.FindFile("ilasm.exe","4.0.30319.1"));
+            var ILDasm = new ProcessUtility(ProgramFinder.ProgramFilesAndDotNet.ScanForFile("ildasm.exe", "4.0.30319.1"));
+            var ILAsm = new ProcessUtility(ProgramFinder.ProgramFilesAndDotNet.ScanForFile("ilasm.exe", "4.0.30319.1"));
 
             Assembly assembly;
             try {
