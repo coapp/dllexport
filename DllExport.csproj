@@ -35,7 +35,7 @@
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)' == 'Test|AnyCPU'">
     <OutputPath>..\output\any\test\bin\</OutputPath>
-    <DefineConstants>TRACE;SIGN_ASSEMBLY</DefineConstants>
+    <DefineConstants>TRACE;TEST_SIGN_ASSEMBLY</DefineConstants>
     <Optimize>true</Optimize>
     <DebugType>pdbonly</DebugType>
     <PlatformTarget>AnyCPU</PlatformTarget>
@@ -60,6 +60,7 @@
   <ItemGroup>
     <Compile Include="Program.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="$(SolutionDir)\..\coapp-solution\Source\AssemblyStrongName.cs" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\coapp-toolkit\CoApp.Toolkit.csproj">
