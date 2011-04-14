@@ -67,10 +67,6 @@
       <Project>{8B7E0D2F-6CA0-4E5E-BF52-1E4BDB132BBC}</Project>
       <Name>CoApp.Toolkit</Name>
     </ProjectReference>
-    <ProjectReference Include="..\coapp-toolkit\CoApp.Toolkit.Unsafe.csproj">
-      <Project>{59D1DBB3-5848-4026-9523-BBC7618B7B77}</Project>
-      <Name>CoApp.Toolkit.Unsafe</Name>
-    </ProjectReference>
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <!-- To modify your build process, add your task inside one of the targets below and uncomment it. 
