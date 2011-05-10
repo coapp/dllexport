@@ -71,6 +71,8 @@ Usage:
         --platform=<arch>           -- outputs the native DLL as arch 
                                        (x64 or x86)
 
+        --create-header=<file>      -- creates a C header file for the library
+
    More Help:
 
         DllExport --help            -- Displays this help.
@@ -87,51 +89,43 @@ Usage:
         private static bool quiet;
         private static bool debug;
         private static string finalOuputFilename;
+        private static string headerFilename;
         private static bool createLib;
         private static string platform = "x86";
-        private static List<string> exports =new List<string>();
+        private static List<string> exports = new List<string> {"EXPORTS"};
+
+        private static List<string> functions = new List<string> {
+            @"#pragma once
+#ifdef __cplusplus
+#define __EXTERN_C extern ""C"" 
+#else
+#define __EXTERN_C 
+#endif 
+"
+        };
+
+        private static Dictionary<CallingConvention, Type> ModOpt = new Dictionary<CallingConvention, Type> {
+            {CallingConvention.Cdecl, typeof (System.Runtime.CompilerServices.CallConvCdecl)},
+            {CallingConvention.FastCall, typeof (System.Runtime.CompilerServices.CallConvFastcall)},
+            {CallingConvention.Winapi, typeof (System.Runtime.CompilerServices.CallConvStdcall)},
+            {CallingConvention.StdCall, typeof (System.Runtime.CompilerServices.CallConvStdcall)},
+            {CallingConvention.ThisCall, typeof (System.Runtime.CompilerServices.CallConvThiscall)}
+        };
+
+        private static Dictionary<CallingConvention, string> CCallingConvention = new Dictionary<CallingConvention, string> {
+            {CallingConvention.Cdecl, "__cdecl"},
+            {CallingConvention.FastCall, "__fastcall"},
+            {CallingConvention.Winapi, "__stdcall"},
+            {CallingConvention.StdCall, "__stdcall"},
+            {CallingConvention.ThisCall, "__thiscall"}
+        };
+        private Dictionary<string, string> enumTypeDefs = new Dictionary<string, string>();
 
         internal class ExportableMember {
             internal MemberInfo member;
             internal string exportedName;
             internal CallingConvention callingConvention;
         }
-
-        internal static Type Modopt(CallingConvention cc) {
-            switch(cc) {
-                case CallingConvention.Cdecl:
-                    return typeof(System.Runtime.CompilerServices.CallConvCdecl);
-                case CallingConvention.FastCall:
-                    return typeof(System.Runtime.CompilerServices.CallConvFastcall);
-                case CallingConvention.Winapi:
-                case CallingConvention.StdCall:
-                    return typeof(System.Runtime.CompilerServices.CallConvStdcall);
-                case CallingConvention.ThisCall:
-                    return typeof(System.Runtime.CompilerServices.CallConvThiscall);
-            }
-            return null;
-        }
-
-        /*
-        static bool FindExport(MemberInfo mi, object obj) {
-            foreach(var attrib in mi.GetCustomAttributes(false))
-                if(attrib.GetType().Name.Equals("DllExportAttribute")) {
-                    try {
-                        members.Add(new ExportableMember {
-                            member = mi, 
-                            exportedName = attrib.GetType().GetProperty("ExportedName").GetValue(attrib, null).ToString(), 
-                            callingConvention = (CallingConvention)attrib.GetType().GetProperty("CallingConvention").GetValue(attrib, null)
-                        });
-                    }
-                    catch(Exception) {
-                        Console.Error.WriteLine("Warning: Found DllExport on Member {0}, but unable to get ExportedName or CallingConvention property.");
-                        return false;
-                    }
-                    return true;
-                }
-            return false;
-        }
-        */
 
         static void Delete(string filename) {
             if(keepTempFiles) {
@@ -146,6 +140,80 @@ Usage:
             new DllExportUtility().main(args);
         }
 
+        private string CType( Type t, UnmanagedType? customType = null ) {
+            
+            switch(t.Name) {
+                case "Byte":
+                case "byte":
+                    return "unsigned __int8";
+                case "SByte":
+                case "sbyte":
+                    return "__int8";
+                case "int":
+                case "Int32":
+                    return "__int32";
+                case "uint":
+                case "UInt32":
+                    return "unsigned __int32";
+                case "Int16":
+                case "short":
+                    return "__int16";
+                case "UInt16":
+                case "ushort":
+                    return "unsigned __int16";
+                case "Int64":
+                case "long":
+                    return "__int64";
+                case "UInt64":
+                case "ulong": 
+                    return "unsigned __int64";
+                case "Single":
+                case "float":
+                    return "float";
+                case "Double":
+                case "double":
+                    return "double";
+                case "Char":
+                case "char":
+                    return "wchar_t";
+                case "bool":
+                case "Boolean":
+                    return "bool";
+                case "string":
+                case "String":
+                    if (customType.HasValue && customType.Value == UnmanagedType.LPWStr ) {
+                        return "const wchar_t*";    
+                    }
+                    return "const char_t*";
+
+
+                case "IntPtr":
+                    return "void*";
+            }
+
+            if( t.IsEnum ) {
+                if( enumTypeDefs.ContainsKey(t.Name)) {
+                    return t.Name;
+                }
+                var enumType = CType(t.GetEnumUnderlyingType()); 
+                
+                
+                var enumValues = t.GetEnumValues();
+                
+                var first = true;
+                var evitems = string.Empty;
+                foreach( var ev in enumValues) {
+                    evitems+= "{2}\r\n    {0} = {1}".format(t.GetEnumName(ev), (int)ev, first? "":",");
+                    first = false;
+                }
+
+                var tyepdefenum = "typedef enum  {{ {2}\r\n}} {0};\r\n".format(t.Name, enumType, evitems);/* : {1} */
+                enumTypeDefs.Add(t.Name, tyepdefenum);
+                return t.Name;
+            }
+
+            return "/* UNKNOWN : {0} */".format(t.Name);
+        }
 
         private string GenerateShimAssembly( string originalAssemblyPath ) {
             Assembly assembly;
@@ -175,18 +243,47 @@ Usage:
                 if (methodInfo != null) {
                     ParameterInfo[] pinfo = methodInfo.GetParameters();
                     var parameterTypes = new Type[pinfo.Length];
-                    for (int i = 0; i < pinfo.Length; i++)
+                    var requiredCustomModifiers = new Type[pinfo.Length][];
+                    var optionalCustomModifiers = new Type[pinfo.Length][];
+                    var customAttributes = new object[pinfo.Length][];
+                    for (int i = 0; i < pinfo.Length; i++) {
                         parameterTypes[i] = pinfo[i].ParameterType;
+                        requiredCustomModifiers[i] =  pinfo[i].GetRequiredCustomModifiers();
+                        optionalCustomModifiers[i] = pinfo[i].GetOptionalCustomModifiers();
+                        customAttributes[i] = pinfo[i].GetCustomAttributes(false);
+                    }
 
-                    modopts[0] = Modopt(exportableMember.callingConvention);
+                    modopts[0] = ModOpt[exportableMember.callingConvention];
 
-                    MethodBuilder methodBuilder = moduleBuilder.DefineGlobalMethod(methodInfo.Name, MethodAttributes.Static | MethodAttributes.Public, CallingConventions.Standard, methodInfo.ReturnType, null, modopts, parameterTypes, null, null);
+                    var decl = @" __EXTERN_C __declspec( dllimport ) {1} {0} {2}(".format(CCallingConvention[exportableMember.callingConvention], CType(methodInfo.ReturnType), exportableMember.exportedName);
+                    var pc = 0;
+                    foreach (var parameterInfo in pinfo) {
+                        var customAttributeData = parameterInfo.GetCustomAttributesData();
+                        UnmanagedType? customType = null;
+                        foreach (var ctorarg in
+                            customAttributeData.Where(cattr => cattr.Constructor.DeclaringType.Name == "MarshalAsAttribute").SelectMany(cattr => cattr.ConstructorArguments.Where(ctorarg => ctorarg.ArgumentType.Name == "UnmanagedType"))) {
+                            customType = (UnmanagedType) ctorarg.Value;
+                        }
+                        decl += "{2}{0} {1}".format(CType(parameterInfo.ParameterType, customType), parameterInfo.Name, (pc == 0) ? "" : ", ");
+                        pc++;
+                    }
+                    decl += ");\r\n";
+                    functions.Add(decl);
+
+                    // stdcall functions need to have the @size after the name.
+                    if (platform == "x86" && exportableMember.callingConvention == CallingConvention.StdCall) {
+                        exportableMember.exportedName = exportableMember.exportedName + "@" + (pc*4);
+                    }
+                    exports.Add(exportableMember.exportedName);
+                    
+                    MethodBuilder methodBuilder = moduleBuilder.DefineGlobalMethod(methodInfo.Name, MethodAttributes.Static | MethodAttributes.Public, CallingConventions.Standard, methodInfo.ReturnType, null, modopts, parameterTypes,requiredCustomModifiers, optionalCustomModifiers);
                     ILGenerator ilGenerator = methodBuilder.GetILGenerator();
 
                     // this is to pull the ol' swicheroo later.
                     ilGenerator.Emit(OpCodes.Ldstr, string.Format(".export [{0}] as {1}", index++, exportableMember.exportedName));
-                    exports.Add(exportableMember.exportedName);
+                    
 
+                    
                     int n = 0;
                     foreach (ParameterInfo parameterInfo in pinfo) {
                         switch (n) {
@@ -207,7 +304,35 @@ Usage:
                                 break;
                         }
                         n++;
-                        methodBuilder.DefineParameter(n, parameterInfo.Attributes, parameterInfo.Name); //1-based... *sigh*
+
+                        var pbuilder = methodBuilder.DefineParameter(n, parameterInfo.Attributes, parameterInfo.Name); //1-based... *sigh*
+                        
+                        // Copy over custom attributes (important for marshalling)
+                        var customAttributeData = parameterInfo.GetCustomAttributesData();
+                        foreach (var attr in customAttributeData) {
+                            object[] cargs = new object[attr.ConstructorArguments.Count];
+                            for (int j = 0; j < attr.ConstructorArguments.Count; j++) {
+                                cargs[j] = attr.ConstructorArguments[j].Value;
+                            }
+                            var pi = new List<PropertyInfo>();
+                            var fi = new List<FieldInfo>();
+                            var pid = new List<object>();
+                            var fid = new List<object>();
+                            foreach (var ni in attr.NamedArguments) {
+                                if (ni.MemberInfo is PropertyInfo) {
+                                    pi.Add(ni.MemberInfo as PropertyInfo);
+                                    pid.Add(ni.TypedValue.Value);
+                                }
+                                if (ni.MemberInfo is FieldInfo) {
+                                    fi.Add(ni.MemberInfo as FieldInfo);
+                                    fid.Add(ni.TypedValue.Value);
+                                }
+                            }
+
+                            var cb = new CustomAttributeBuilder(attr.Constructor, cargs, pi.ToArray(), pid.ToArray(), fi.ToArray(), fid.ToArray());
+                            pbuilder.SetCustomAttribute(cb);
+                            
+                        }
                     }
                     ilGenerator.EmitCall(OpCodes.Call, methodInfo, null);
                     ilGenerator.Emit(OpCodes.Ret);
@@ -250,10 +375,6 @@ Usage:
             }
         }
 
-        private Assembly LoadAssembly(string assemblyPath) {
-            
-            return null;
-        }
 
         int main(string[] args) {
             // int firstArg = 0;
@@ -300,13 +421,16 @@ Usage:
                          finalOuputFilename = argumentParameters.FirstOrDefault();
                          break;
 
+                     case "create-header":
+                         headerFilename = argumentParameters.FirstOrDefault();
+                         break;
+
                      case "platform":
                          platform = (argumentParameters.FirstOrDefault() ?? "x86" ).Equals("x64",StringComparison.CurrentCultureIgnoreCase) ? "x64" : "x86";
                          break;
                         
                      case "create-lib":
                          createLib = true;
-                         exports.Add("EXPORTS");
                          break;
 
                      case "help":
@@ -395,6 +519,14 @@ Usage:
                 File.WriteAllLines(defFile,exports);
                 Lib.ExecNoRedirections("/NOLOGO /machine:{0} /def:{1} /OUT:{2}", platform, defFile, libFile);
 
+            }
+
+            if (headerFilename != null ) {
+
+                foreach(var e in enumTypeDefs) {
+                    functions.Insert(1, e.Value);
+                }
+                File.WriteAllLines(headerFilename, functions);
             }
 
             return 0;
