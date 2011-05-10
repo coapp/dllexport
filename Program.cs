@@ -16,10 +16,12 @@
 namespace CoApp.DllExport {
     using System;
     using System.IO;
+    using System.Linq;
     using System.Runtime.InteropServices;
     using System.Collections.Generic;
     using System.Reflection;
     using System.Reflection.Emit;
+    using Toolkit.Exceptions;
     using Toolkit.Extensions;
     using Toolkit.Utility;
 
@@ -60,7 +62,14 @@ Usage:
                                        dependent tools (ilasm and ildasm)
                                        instead of using the cached values.
 
-        --no-logo                   -- suppresses informational messages.
+        --nologo                    -- suppresses informational messages.
+
+        --output-filename=<file>    -- creates the native dll as <file>
+
+        --create-lib                -- creates a lib file
+
+        --platform=<arch>           -- outputs the native DLL as arch 
+                                       (x64 or x86)
 
    More Help:
 
@@ -73,10 +82,14 @@ Usage:
         DllExport --sampleUsage     -- Displays some examples of using the 
                                        DllExport attribute.";
 
-        internal static List<ExportableMember> members = new List<ExportableMember>();
+        // internal static List<ExportableMember> members = new List<ExportableMember>();
         private static bool keepTempFiles;
         private static bool quiet;
         private static bool debug;
+        private static string finalOuputFilename;
+        private static bool createLib;
+        private static string platform = "x86";
+        private static List<string> exports =new List<string>();
 
         internal class ExportableMember {
             internal MemberInfo member;
@@ -99,11 +112,16 @@ Usage:
             return null;
         }
 
+        /*
         static bool FindExport(MemberInfo mi, object obj) {
-            foreach(object attrib in mi.GetCustomAttributes(false))
+            foreach(var attrib in mi.GetCustomAttributes(false))
                 if(attrib.GetType().Name.Equals("DllExportAttribute")) {
                     try {
-                        members.Add(new ExportableMember { member = mi, exportedName = attrib.GetType().GetProperty("ExportedName").GetValue(attrib, null).ToString(), callingConvention = (CallingConvention)attrib.GetType().GetProperty("CallingConvention").GetValue(attrib, null) });
+                        members.Add(new ExportableMember {
+                            member = mi, 
+                            exportedName = attrib.GetType().GetProperty("ExportedName").GetValue(attrib, null).ToString(), 
+                            callingConvention = (CallingConvention)attrib.GetType().GetProperty("CallingConvention").GetValue(attrib, null)
+                        });
                     }
                     catch(Exception) {
                         Console.Error.WriteLine("Warning: Found DllExport on Member {0}, but unable to get ExportedName or CallingConvention property.");
@@ -113,6 +131,7 @@ Usage:
                 }
             return false;
         }
+        */
 
         static void Delete(string filename) {
             if(keepTempFiles) {
@@ -127,110 +146,50 @@ Usage:
             new DllExportUtility().main(args);
         }
 
-        int main(string[] args) {
-            int firstArg = 0;
-            bool mergeAssemblies = false;
 
-            while(firstArg < args.Length && args[firstArg].StartsWith("--"))
-                switch(args[firstArg++].ToLower()) {
-                    case "--merge":
-                        mergeAssemblies = true;
-                        break;
-
-                    case "--keep-temp-files":
-                        keepTempFiles = true;
-                        break;
-
-                    case "--rescan-tools":
-                        ProgramFinder.IgnoreCache = true;
-                        break;
-
-                    case "--no-logo":
-                        quiet = true;
-                        break;
-
-                    case "--debug":
-                        debug = true;
-                        break;
-
-                    case "--sampleusage":
-                        SampleUsage();
-                        return 0;
-
-                    case "--sampleclass":
-                        SampleClass();
-                        return 0;
-
-                    case "--help":
-                        Help();
-                        return 0;
-
-                    default:
-                        Logo();
-                        return Fail("Error: unrecognized switch:{0}", args[firstArg-1]);
-                }
-            
-
-            if(firstArg >= args.Length) {
-                Help();
-                return 0;
-            }
-
-            if(!quiet)
-                Logo();
-
-            string targetAssembly = Path.GetFullPath(args[firstArg]);
-            if(!File.Exists(targetAssembly)) {
-                return Fail("Error: the specified target assembly \r\n   [{0}]\r\ndoes not exist.", targetAssembly);
-            }
-
-            var ILDasm = new ProcessUtility(ProgramFinder.ProgramFilesAndDotNet.ScanForFile("ildasm.exe", "4.0.30319.1"));
-            var ILAsm = new ProcessUtility(ProgramFinder.ProgramFilesAndDotNet.ScanForFile("ilasm.exe", "4.0.30319.1"));
-
+        private string GenerateShimAssembly( string originalAssemblyPath ) {
             Assembly assembly;
+
             try {
-                byte[] rawAssembly = File.ReadAllBytes(targetAssembly);
-                assembly = Assembly.Load(rawAssembly);
-
+                assembly = Assembly.Load(File.ReadAllBytes(originalAssemblyPath));
             }
-            catch(Exception) {
-                return Fail("Error: unable to load the specified target assembly \r\n   [{0}].\r\n\r\nMost likely, it has already been modified--and can't be modified again.", targetAssembly);
+            catch {
+                throw new ConsoleException("Error: unable to load the specified original assembly \r\n   [{0}].\r\n\r\nMost likely, it has already been modified--and can't be modified again.", originalAssemblyPath);
             }
+           
+            var members = GetExportableMembers(assembly);
 
-            foreach(Type type in assembly.GetTypes())
-                type.FindMembers(MemberTypes.All, BindingFlags.Public|BindingFlags.Static, FindExport, null);
-
-            if(members.Count == 0) {
-                return Fail("No members found with DllExport attributes in the target assembly \r\n   [{0}]", targetAssembly);
-
+            if (members.Count() == 0) {
+                throw new ConsoleException("No members found with DllExport attributes in the target assembly \r\n   [{0}]", originalAssemblyPath);
             }
 
-            var assemblyName = new AssemblyName("$"+assembly.GetName());
+            var assemblyName = new AssemblyName("$" + assembly.GetName());
             var assemblyBuilder = AppDomain.CurrentDomain.DefineDynamicAssembly(assemblyName, AssemblyBuilderAccess.Save);
             var moduleBuilder = assemblyBuilder.DefineDynamicModule(assemblyName.Name, assemblyName.Name + ".dll");
 
-            var index =0;
+            var index = 0;
             var modopts = new Type[1];
 
-            foreach(ExportableMember exportableMember in members) {
+            foreach (ExportableMember exportableMember in members) {
                 var methodInfo = exportableMember.member as MethodInfo;
-                if(methodInfo != null) {
+                if (methodInfo != null) {
                     ParameterInfo[] pinfo = methodInfo.GetParameters();
                     var parameterTypes = new Type[pinfo.Length];
-                    for(int i=0;i<pinfo.Length;i++)
+                    for (int i = 0; i < pinfo.Length; i++)
                         parameterTypes[i] = pinfo[i].ParameterType;
 
                     modopts[0] = Modopt(exportableMember.callingConvention);
 
-                    MethodBuilder methodBuilder = moduleBuilder.DefineGlobalMethod(methodInfo.Name, MethodAttributes.Static|MethodAttributes.Public, CallingConventions.Standard, methodInfo.ReturnType, null, modopts, parameterTypes, null, null);
+                    MethodBuilder methodBuilder = moduleBuilder.DefineGlobalMethod(methodInfo.Name, MethodAttributes.Static | MethodAttributes.Public, CallingConventions.Standard, methodInfo.ReturnType, null, modopts, parameterTypes, null, null);
                     ILGenerator ilGenerator = methodBuilder.GetILGenerator();
 
                     // this is to pull the ol' swicheroo later.
                     ilGenerator.Emit(OpCodes.Ldstr, string.Format(".export [{0}] as {1}", index++, exportableMember.exportedName));
+                    exports.Add(exportableMember.exportedName);
 
                     int n = 0;
-                    foreach(ParameterInfo parameterInfo in pinfo) {
-                        switch(n) {
+                    foreach (ParameterInfo parameterInfo in pinfo) {
+                        switch (n) {
                             case 0:
                                 ilGenerator.Emit(OpCodes.Ldarg_0);
                                 break;
@@ -258,65 +217,186 @@ Usage:
             moduleBuilder.CreateGlobalFunctions();
 
             var outputFilename = assemblyName.Name + ".dll";
-            var temporaryIlFilename = assemblyName.Name + ".il";
+
+            if( File.Exists(outputFilename)) {
+                File.Delete(outputFilename);
+            }
             assemblyBuilder.Save(outputFilename);
 
-            int rc = ILDasm.Exec(@"/text /nobar /typelist ""{0}""", outputFilename);
-            Delete(outputFilename); // eliminate it regardless of result.
-            if(0 != rc) {
-                return Fail("Error: unable to disassemble the temporary assembly\r\n   [{0}]\r\nMore Information:\r\n{1}", outputFilename, ILDasm.StandardOut);
-            }
-            string ilSource = ILDasm.StandardOut;
+            return outputFilename;
+        }
 
-            ilSource = System.Text.RegularExpressions.Regex.Replace(ilSource, @"IL_0000:.*ldstr.*\""(?<x>.*)\""", "${x}");
+        private IEnumerable<ExportableMember> GetExportableMembers(Assembly assembly) {
+            // var memberInfos = assembly.GetTypes().Aggregate(Enumerable.Empty<MemberInfo>(), (current, type) => current.Union(type.FindMembers(MemberTypes.Method, BindingFlags.Public | BindingFlags.Static, (memberInfo, obj) => memberInfo.GetCustomAttributes(false).Any(attrib => attrib.GetType().Name.Equals("DllExportAttribute")), null)));
+
+            foreach (var mi in assembly.GetTypes().Aggregate(Enumerable.Empty<MemberInfo>(), (current, type) => current.Union(type.GetMethods(BindingFlags.Public | BindingFlags.Static)))) {
+                foreach (var attrib in from attrib in mi.GetCustomAttributes(false) where attrib.GetType().Name.Equals("DllExportAttribute") select attrib) {
+                    ExportableMember member = null;
+                    try {
+                        member = new ExportableMember {
+                            member = mi,
+                            exportedName = attrib.GetType().GetProperty("ExportedName").GetValue(attrib, null).ToString(),
+                            callingConvention = (CallingConvention) attrib.GetType().GetProperty("CallingConvention").GetValue(attrib, null)
+                        };
+                    }
+                    catch (Exception) {
+                        Console.Error.WriteLine( "Warning: Found DllExport on Member {0}, but unable to get ExportedName or CallingConvention property.");
+                    }
+
+                    if (member != null)
+                        yield return member;
+                    
+                }
+            }
+        }
+
+        private Assembly LoadAssembly(string assemblyPath) {
+            
+            return null;
+        }
+
+        int main(string[] args) {
+            // int firstArg = 0;
+            bool mergeAssemblies = false;
+
+            var options = args.Switches();
+            var parameters = args.Parameters();
+
+
+             foreach (string arg in options.Keys) {
+                 IEnumerable<string> argumentParameters = options[arg];
+
+                 switch (arg) {
+                     case "nologo":
+                         this.Assembly().SetLogo("");
+                         quiet = true;
+                         break;
+
+                     case "merge":
+                         mergeAssemblies = true;
+                         break;
+
+                     case "keep-temp-files":
+                         keepTempFiles = true;
+                         break;
+
+                     case "rescan-tools":
+                         ProgramFinder.IgnoreCache = true;
+                         break;
+
+                     case "debug":
+                         debug = true;
+                         break;
+
+                     case "sampleusage":
+                         SampleUsage();
+                         return 0;
+
+                     case "sampleclass":
+                         SampleClass();
+                         return 0;
+
+                     case "output-filename":
+                         finalOuputFilename = argumentParameters.FirstOrDefault();
+                         break;
+
+                     case "platform":
+                         platform = (argumentParameters.FirstOrDefault() ?? "x86" ).Equals("x64",StringComparison.CurrentCultureIgnoreCase) ? "x64" : "x86";
+                         break;
+                        
+                     case "create-lib":
+                         createLib = true;
+                         exports.Add("EXPORTS");
+                         break;
+
+                     case "help":
+                         Help();
+                         return 0;
+
+                     default:
+                         Logo();
+                         return Fail("Error: unrecognized switch:{0}", arg );
+                 }
+             }
+
+
+             if (parameters.Count() != 1  ) {
+                Help();
+                return 0;
+            }
+
+            if(!quiet)
+                Logo();
+
+            var ILDasm = new ProcessUtility(ProgramFinder.ProgramFilesAndDotNet.ScanForFile("ildasm.exe", "4.0.30319.1"));
+            var ILAsm = new ProcessUtility(ProgramFinder.ProgramFilesAndDotNet.ScanForFile("ilasm.exe", "4.0.30319.1"));
+            var Lib = new ProcessUtility(ProgramFinder.ProgramFilesAndDotNet.ScanForFile("lib.exe"));
+
+
+            var originalAssemblyPath = parameters.First().GetFullPath();
+
+            if(!File.Exists(originalAssemblyPath)) {
+                return Fail("Error: the specified original assembly \r\n   [{0}]\r\ndoes not exist.", originalAssemblyPath);
+            }
+
+            var shimAssemblyPath = GenerateShimAssembly(originalAssemblyPath);
+            finalOuputFilename = string.IsNullOrEmpty(finalOuputFilename) ? (mergeAssemblies ? originalAssemblyPath : shimAssemblyPath) : finalOuputFilename;
+
+            var temporaryIlFilename = shimAssemblyPath + ".il";
+            var rc = ILDasm.Exec(@"/text /nobar /typelist ""{0}""", shimAssemblyPath);
+            if(0 != rc) {
+                return Fail("Error: unable to disassemble the temporary assembly\r\n   [{0}]\r\nMore Information:\r\n{1}", shimAssemblyPath, ILDasm.StandardOut);
+            }
+            Delete(shimAssemblyPath); // eliminate it regardless of result.
+            var ilSource = System.Text.RegularExpressions.Regex.Replace(ILDasm.StandardOut, @"IL_0000:.*ldstr.*\""(?<x>.*)\""", "${x}");
 
             if(mergeAssemblies) {
-                int start = ilSource.IndexOf("\r\n.method");
-                int end = ilSource.LastIndexOf("// end of global method");
-
+                var start = ilSource.IndexOf("\r\n.method");
+                var end = ilSource.LastIndexOf("// end of global method");
                 ilSource = ilSource.Substring(start, end - start);
 
                 // arg! needed this to make sure the resources came out. grrr
-                rc = ILDasm.Exec(@"/nobar /typelist ""{0}"" /out=""{1}""", targetAssembly, temporaryIlFilename);
-
-                rc = ILDasm.Exec(@"/nobar /text /typelist ""{0}""", targetAssembly);
+                rc = ILDasm.Exec(@"/nobar /typelist ""{0}"" /out=""{1}""", originalAssemblyPath, temporaryIlFilename);
+                rc = ILDasm.Exec(@"/nobar /text /typelist ""{0}""", originalAssemblyPath);
                 if(0 != rc) {
-                    return Fail("Error: unable to disassemble the target assembly\r\n   [{0}]\r\nMore Information:\r\n{1}", outputFilename, ILDasm.StandardOut);
+                    return Fail("Error: unable to disassemble the target assembly\r\n   [{0}]\r\nMore Information:\r\n{1}", shimAssemblyPath, ILDasm.StandardOut);
                 }
-                string ilTargetSource = ILDasm.StandardOut;
+                var ilTargetSource = ILDasm.StandardOut;
 
                 start = Math.Min(ilTargetSource.IndexOf(".method"), ilTargetSource.IndexOf(".class"));
-                string ilFinalSource = ilTargetSource.Substring(0, start) + ilSource + ilTargetSource.Substring(start);
+                ilSource = ilTargetSource.Substring(0, start) + ilSource + ilTargetSource.Substring(start);
+            }
 
-                File.WriteAllText(temporaryIlFilename, ilFinalSource);
-                rc = ILAsm.Exec(@"/dll {2} /output={0} ""{1}""", outputFilename, temporaryIlFilename, debug ? "/debug" : "");
+            File.WriteAllText(temporaryIlFilename, ilSource);
+            rc = ILAsm.Exec(@"{3} /dll {2} /output={0} ""{1}""", shimAssemblyPath, temporaryIlFilename, debug ? "/debug" : "", platform == "x64" ? "/X64" : "");
+
+            if (!debug)
                 Delete(temporaryIlFilename); // delete temp file regardless of result.
-                if(0 != rc) {
-                    return Fail("Error: unable to assemble the merged assembly\r\n   [{0}]\r\n   [{1}]\r\nMore Information:\r\n{2}", outputFilename, temporaryIlFilename, ILAsm.StandardError);
-                }
 
-                File.Delete(targetAssembly + ".bak");
+            if (0 != rc) {
+                return Fail("Error: unable to assemble the merged assembly\r\n   [{0}]\r\n   [{1}]\r\nMore Information:\r\n{2}", shimAssemblyPath, temporaryIlFilename, ILAsm.StandardError);
+            }
 
-                File.Move(targetAssembly, targetAssembly + ".bak");
-                File.Move(outputFilename, targetAssembly);
+            if (originalAssemblyPath.Equals(finalOuputFilename, StringComparison.CurrentCultureIgnoreCase)) {
+                File.Delete(originalAssemblyPath + ".orig");
+                File.Move(originalAssemblyPath, originalAssemblyPath + ".orig");
+            }
+            File.Delete(finalOuputFilename);
+            File.Move(shimAssemblyPath, finalOuputFilename);
 
-                if(!quiet)
-                    Console.WriteLine("Merged Export functions into Assembly: {0}", targetAssembly);
+            if (!quiet) {
+                Console.WriteLine("Created Exported functions in Assembly: {0}", finalOuputFilename);
+            }
+
+            if( createLib ) {
+                var defFile = Path.GetFileNameWithoutExtension(finalOuputFilename) + ".def";
+                var libFile = Path.GetFileNameWithoutExtension(finalOuputFilename) + ".lib";
+                
+                File.WriteAllLines(defFile,exports);
+                Lib.ExecNoRedirections("/NOLOGO /machine:{0} /def:{1} /OUT:{2}", platform, defFile, libFile);
 
             }
-            else {
-                File.WriteAllText(temporaryIlFilename, ilSource);
-                rc = ILAsm.Exec(@"/dll {2} /output={0} ""{1}""", outputFilename, temporaryIlFilename, debug ? "/debug" : "");
-                if(!debug)
-                    Delete(temporaryIlFilename);
 
-                if(0 != rc) {
-                    return Fail("Error: unable to assemble the output assembly\r\n   [{0}]\r\n   [{1}]\r\nMore Information:\r\n{2}", outputFilename, temporaryIlFilename, ILAsm.StandardError);
-                }
-
-                if(!quiet)
-                    Console.WriteLine("Created Export Assembly: {0}", outputFilename);
-            }
             return 0;
         }
 
