@@ -316,7 +316,7 @@ Usage:
                         n++;
 
                         ParameterBuilder pbuilder = methodBuilder.DefineParameter(n, parameterInfo.Attributes, parameterInfo.Name);
-                            //1-based... *sigh*
+                            //1-based... *sigh*...
 
                         // Copy over custom attributes (important for marshalling)
                         IList<CustomAttributeData> customAttributeData = parameterInfo.GetCustomAttributesData();
