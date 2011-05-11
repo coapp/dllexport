@@ -339,7 +339,6 @@ Usage:
                                     fid.Add(ni.TypedValue.Value);
                                 }
                             }
-
                             var cb = new CustomAttributeBuilder(attr.Constructor, cargs, pi.ToArray(), pid.ToArray(), fi.ToArray(),
                                 fid.ToArray());
                             pbuilder.SetCustomAttribute(cb);
