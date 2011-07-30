@@ -63,9 +63,9 @@
     <Compile Include="$(SolutionDir)\..\solution\Source\AssemblyStrongName.cs" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\toolkit\CoApp.Toolkit.csproj">
+    <ProjectReference Include="..\toolkit\CoApp.Toolkit.Core.csproj">
       <Project>{8B7E0D2F-6CA0-4E5E-BF52-1E4BDB132BBC}</Project>
-      <Name>CoApp.Toolkit</Name>
+      <Name>CoApp.Toolkit.Core</Name>
     </ProjectReference>
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
